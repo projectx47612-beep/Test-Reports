@@ -6,6 +6,7 @@
 
 !pip install pdfplumber pillow pytesseract pandas regex camelot-py[cv] tabula-py PyPDF2 --quiet
 
+import streamlit as st
 import re
 import pdfplumber
 import pytesseract
