@@ -3,6 +3,7 @@ pillow
 pytesseract
 pandas
 regex
+camelot
 camelot-py[cv]
 tabula-py
 PyPDF2 --quiet
