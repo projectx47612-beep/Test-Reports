@@ -4,7 +4,6 @@
 # ⚠️ Demo only — not medical advice. Extraction and analysis
 #    accuracy depend heavily on report format.
 
-!pip install pdfplumber pillow pytesseract pandas regex camelot-py[cv] tabula-py PyPDF2 --quiet
 
 import streamlit as st
 import re
