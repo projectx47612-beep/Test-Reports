@@ -138,7 +138,8 @@ def extract_text_from_file(file_path, filename):
             gray = ImageOps.grayscale(image)
             # Simple preprocessing for OCR
             w, h = gray.size
-            if w < 1000 and 'colab' in str(get_ipython()): # Check if in Colab for resize
+            # Resize small images for better OCR accuracy (unconditionally)
+            if w < 1000:
                 gray = gray.resize((int(w*1.5), int(h*1.5)), Image.Resampling.LANCZOS)
 
             text = pytesseract.image_to_string(gray)
