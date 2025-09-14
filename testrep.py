@@ -6,16 +6,17 @@ import pdfplumber
 import pytesseract
 import re
 
-# ----- LAB RULES dictionary (copy your full dict here) -----
+# --------------------- LAB_RULES dictionary ---------------------
 LAB_RULES = {
     "glucose": {"low": 70, "high": 99, "unit": "mg/dL", "meaning": "Diabetes risk if high"},
     "fasting blood sugar": {"low": 74, "high": 106, "unit": "mg/dL", "meaning": "Diabetes risk if high"},
     "postprandial glucose": {"low": 70, "high": 140, "unit": "mg/dL", "meaning": "Elevated after meals indicates diabetes"},
     "hba1c": {"low": 4, "high": 6.4, "unit": "%", "meaning": "Diabetes marker; >6.5% indicates diabetes"},
-    # Add rest of your tests...
+    "hemoglobin": {"low": 12, "high": 16.5, "unit": "g/dL", "meaning": "Low may indicate anemia"},
+    # Add remaining tests from your LAB_RULES...
 }
 
-# ----- Normalize value function -----
+# --------------------- normalize_value() ---------------------
 def normalize_value(value):
     value = str(value).replace(",", "").strip()
     if value.startswith('<') or value.startswith('>'):
@@ -37,12 +38,13 @@ def normalize_value(value):
     except:
         return None
 
-# ----- Extraction function with BytesIO support -----
+# --------------------- extract_text_from_file() ---------------------
 def extract_text_from_file(file_stream, filename):
     text = ""
     if filename.lower().endswith(".pdf"):
         try:
             with pdfplumber.open(file_stream) as pdf:
+                # Extract text from all pages
                 for page in pdf.pages:
                     page_text = page.extract_text()
                     if page_text:
@@ -60,19 +62,18 @@ def extract_text_from_file(file_stream, filename):
         st.error("Unsupported file format.")
     return text
 
-# ----- Analysis function with relaxed regex pattern -----
+# --------------------- analyze_text_for_lab_values() ---------------------
 def analyze_text_for_lab_values(text):
     results = []
     text_low = text.lower()
     for test, rule in LAB_RULES.items():
-        # New pattern allows spaces, optional colon/hyphen, before the numeric value
+        # Relaxed regex to tolerate spaces, colon or hyphen before value
         pattern = rf"{re.escape(test)}\s*[:\-]*\s*([\d\.]+)"
         match = re.search(pattern, text_low)
         if match:
             value = float(match.group(1))
-            # Attempt to get reference range from text, fallback to defaults in rules
             ref_range_match = re.search(
-                rf"{re.escape(test)}.*?(\d+\.?\d*)\s*-\s*(\d+\.?\d*)", 
+                rf"{re.escape(test)}.*?(\d+\.?\d*)\s*-\s*(\d+\.?\d*)",
                 text_low
             )
             if ref_range_match:
@@ -97,7 +98,7 @@ def analyze_text_for_lab_values(text):
             })
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["Test", "Value", "Reference Range", "Status", "Meaning"])
 
-# ----- Summary function -----
+# --------------------- summarize_results() ---------------------
 def summarize_results(df):
     if df is None or df.empty:
         return "⚠ No recognized tests found in this report."
@@ -118,20 +119,13 @@ def summarize_results(df):
                 notes.append(f"Low {test_name} → {meaning_detail}")
         return "⚠ Abnormal findings detected:\n- " + "\n- ".join(notes)
 
-# ----- Streamlit UI -----
-st.set_page_config(
-    page_title="Universal Lab Report Analyzer", page_icon="🩺", layout="wide", initial_sidebar_state="expanded"
-)
+# --------------------- Streamlit dashboard UI ---------------------
+st.set_page_config(page_title="Universal Lab Report Analyzer", page_icon="🩺", layout="wide", initial_sidebar_state="expanded")
 
 with st.sidebar:
     st.header("Lab Report Upload")
-    uploaded_files = st.file_uploader(
-        "Upload PDF or Image Reports", accept_multiple_files=True, type=['pdf', 'png', 'jpg', 'jpeg']
-    )
-    st.markdown(
-        "<small>🔒 Private, local processing. <br>⚠ Demo only — not medical advice.</small>",
-        unsafe_allow_html=True
-    )
+    uploaded_files = st.file_uploader("Upload PDF or Image Reports", accept_multiple_files=True, type=['pdf', 'png', 'jpg', 'jpeg'])
+    st.markdown("<small>🔒 Private, local processing. <br>⚠ Demo only — not medical advice.</small>", unsafe_allow_html=True)
     analyze_btn = st.button("Analyze Reports", use_container_width=True)
 
 st.title("🩺 Universal Lab Report Analyzer")
@@ -142,8 +136,8 @@ if uploaded_files and analyze_btn:
         st.subheader(f"📄 File: {uploaded_file.name}")
         file_stream = io.BytesIO(uploaded_file.read())
         extracted_text = extract_text_from_file(file_stream, uploaded_file.name)
-        with st.expander("🔹 Extracted Text (Preview)", expanded=False):
-            st.text_area("Extracted Text Preview", value=extracted_text[:1000], height=150)
+        with st.expander("🔹 Extracted Text (Preview)", expanded=True):
+            st.text_area("Extracted Text Preview", value=extracted_text, height=400)
         results_df = analyze_text_for_lab_values(extracted_text)
         if not results_df.empty:
             st.subheader("🔬 Analysis Results")
