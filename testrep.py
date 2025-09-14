@@ -11,7 +11,6 @@ import pdfplumber
 import pytesseract
 import pandas as pd
 from PIL import Image, ImageOps
-import tabula
 import io # Import io module for file handling
 
 # -----------------------------
