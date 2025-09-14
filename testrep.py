@@ -1,12 +1,24 @@
-import streamlit as st
-import pandas as pd
-import io
-from PIL import Image, ImageOps
+# =============================================
+# 🩺 Universal Lab Report Analyzer - Merged & Improved (Demo)
+# =============================================
+# ⚠️ Demo only — not medical advice. Extraction and analysis
+#    accuracy depend heavily on report format.
+
+!pip install pdfplumber pillow pytesseract pandas regex camelot-py[cv] tabula-py PyPDF2 --quiet
+
+import re
 import pdfplumber
 import pytesseract
-import re
+import pandas as pd
+from google.colab import files
+from PIL import Image, ImageOps
+import camelot
+import tabula
+import io # Import io module for file handling
 
-# ---------------- LAB_RULES dictionary ----------------
+# -----------------------------
+# Expanded Dictionary of Tests
+# -----------------------------
 LAB_RULES = {
     # --- Diabetes / Sugar ---
     "glucose": {"low": 70, "high": 99, "unit": "mg/dL", "meaning": "Diabetes risk if high"},
@@ -67,95 +79,148 @@ LAB_RULES = {
     # --- Allergy ---
     "ige": {"low": 0, "high": 87, "unit": "IU/mL", "meaning": "High = allergy or asthma risk"},
 }
-# ---------------- Normalize Value ----------------
-def normalize_value(value):
-    value = str(value).replace(",", "").strip()
-    if value.startswith('<') or value.startswith('>'):
-        value = value[1:]
-    if "Lakh" in value or "Lac" in value:
+
+# ------------------------
+# 1. Extract data from PDF/Image
+# ------------------------
+def extract_text_from_file(file_path, filename):
+    """Attempts to extract text from PDF or image."""
+    text = ""
+    if filename.lower().endswith(".pdf"):
+        # Try text extraction first
         try:
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+        except Exception as e:
+            print(f"PDF text extraction failed: {e}")
+
+        # If text extraction failed or was sparse, try table extraction then OCR
+        if not text.strip():
+             print("PDF text extraction failed or returned empty. Trying table extraction...")
+             all_tests_from_tables = []
+             try:
+                 # Try Camelot
+                 tables = camelot.read_pdf(file_path, pages="all", flavor="stream", suppress_stdout=True)
+                 if tables:
+                     for t in tables:
+                         df = t.df
+                         for _, row in df.iterrows():
+                             row_list = row.dropna().astype(str).tolist()
+                             if len(row_list) >= 3: # Basic heuristic for Test, Value, Ref
+                                all_tests_from_tables.append(row_list)
+             except Exception as e:
+                 print(f"Camelot failed: {e}")
+
+             if not all_tests_from_tables:
+                 print("Table extraction failed. Trying OCR on PDF pages...")
+                 try:
+                     # Convert PDF pages to images and perform OCR
+                     # Note: This requires converting PDF pages to images, which is more complex
+                     # and might require external libraries or subprocess calls not directly available here.
+                     # As a fallback, we will read the file content and try OCR on the whole file
+                     # if it's treated as an image (less reliable for multi-page PDFs).
+                     file_path.seek(0) # Reset file pointer
+                     image = Image.open(file_path).convert("RGB") # This will likely only read the first page or fail
+                     gray = ImageOps.grayscale(image)
+                     text = pytesseract.image_to_string(gray)
+                 except Exception as e:
+                     print(f"PDF to Image/OCR fallback failed: {e}")
+             else:
+                 # If table extraction worked, concatenate relevant columns to form text
+                 text = "\n".join([" ".join(row) for row in all_tests_from_tables])
+
+
+    elif filename.lower().endswith((".png", ".jpg", ".jpeg")):
+        try:
+            image = Image.open(file_path).convert("RGB")
+            gray = ImageOps.grayscale(image)
+            # Simple preprocessing for OCR
+            w, h = gray.size
+            if w < 1000 and 'colab' in str(get_ipython()): # Check if in Colab for resize
+                gray = gray.resize((int(w*1.5), int(h*1.5)), Image.Resampling.LANCZOS)
+
+            text = pytesseract.image_to_string(gray)
+        except Exception as e:
+            print(f"Image OCR failed: {e}")
+            text = ""
+    else:
+        print("Unsupported file format.")
+        text = ""
+
+    return text
+
+# ------------------------
+# 2. Normalize numbers
+# ------------------------
+def normalize_value(value):
+    """Extract numeric part, handle units like Lakh."""
+    value = str(value).replace(",", "").strip()
+    # Handle ranges like "<10" or ">5"
+    if value.startswith('<') or value.startswith('>'):
+        value = value[1:] # Remove the sign for parsing
+    # Handle units like Lakh (assuming it means * 100000)
+    if "Lakh" in value or "Lac" in value:
+         try:
             num = float(re.findall(r"[\d\.]+", value)[0])
             return num * 100000
-        except:
-            return None
+         except:
+             return None
+    # Handle common units in value itself (e.g., 10.5 g/dL)
     match_num_unit = re.match(r"(\d+\.?\d*)\s*([a-zA-Z%/µ]+)?", value)
     if match_num_unit:
         try:
             return float(match_num_unit.group(1))
         except ValueError:
             return None
+
+    # Default: just try to find a number
     try:
         return float(re.findall(r"[\d\.]+", value)[0])
     except:
         return None
 
-# ---------------- Extract full text from all PDF pages ----------------
-def extract_text_from_file(file_stream, filename):
-    text = ""
-    if filename.lower().endswith(".pdf"):
-        try:
-            with pdfplumber.open(file_stream) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-        except Exception as e:
-            st.error(f"PDF text extraction failed: {e}")
-    elif filename.lower().endswith((".png", ".jpg", ".jpeg")):
-        try:
-            image = Image.open(file_stream).convert("RGB")
-            gray = ImageOps.grayscale(image)
-            text = pytesseract.image_to_string(gray)
-        except Exception as e:
-            st.error(f"Image OCR failed: {e}")
-    else:
-        st.error("Unsupported file format.")
-    return text
-
-# ---------------- Extract all tables from all pages ----------------
-def extract_all_tables_from_pdf(file_stream):
-    all_tables = []
-    try:
-        with pdfplumber.open(file_stream) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    df = pd.DataFrame(table)
-                    all_tables.append(df)
-    except Exception as e:
-        st.error(f"Table extraction failed: {e}")
-    if all_tables:
-        combined_df = pd.concat(all_tables, ignore_index=True)
-        return combined_df
-    else:
-        return pd.DataFrame()
-
-# ---------------- Analyze text for lab values ----------------
+# ------------------------
+# 3. Analyze Text for Lab Values
+# ------------------------
 def analyze_text_for_lab_values(text):
     results = []
     text_low = text.lower()
+
     for test, rule in LAB_RULES.items():
-        pattern = rf"{re.escape(test)}\s*[:\-]*\s*([\d\.]+)"
+        # Use regex to find test name followed by a number (value)
+        # This pattern is a basic attempt and may need refinement
+        pattern = rf"{re.escape(test)}[^0-9]*(\d+\.?\d*)"
         match = re.search(pattern, text_low)
         if match:
             value = float(match.group(1))
-            ref_range_match = re.search(
-                rf"{re.escape(test)}.*?(\d+\.?\d*)\s*-\s*(\d+\.?\d*)",
-                text_low
-            )
+            # Attempt to find a reference range nearby (heuristic)
+            # This is very basic and might not work well for all reports
+            ref_range_match = re.search(rf"{re.escape(test)}.*?\d+\.?\d*.*?(\d+\.?\d*)\s*-\s*(\d+\.?\d*)", text_low)
             if ref_range_match:
                 low_ref, high_ref = float(ref_range_match.group(1)), float(ref_range_match.group(2))
+                # Update rule range if found in text, but keep the default as fallback
                 current_low, current_high = low_ref, high_ref
                 range_str = f"{low_ref} - {high_ref} {rule['unit']}"
             else:
                 current_low, current_high = rule["low"], rule["high"]
                 range_str = f"{rule['low']} - {rule['high']} {rule['unit']}"
-            if value < current_low:
-                status = f"LOW ({value} {rule.get('unit', '')})"
-            elif value > current_high:
-                status = f"HIGH ({value} {rule.get('unit', '')})"
+
+
+            status = "Unknown"
+            if isinstance(value, (int, float)):
+                if value < current_low:
+                    status = f"LOW ({value} {rule.get('unit', '')})" # Use .get for safety
+                elif value > current_high:
+                    status = f"HIGH ({value} {rule.get('unit', '')})"
+                else:
+                    status = f"Normal ({value} {rule.get('unit', '')})"
             else:
-                status = f"Normal ({value} {rule.get('unit', '')})"
+                 status = f"Value: {value}"
+
+
             results.append({
                 "Test": test.upper(),
                 "Value": value,
@@ -165,92 +230,70 @@ def analyze_text_for_lab_values(text):
             })
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["Test", "Value", "Reference Range", "Status", "Meaning"])
 
-# ---------------- Summarize results ----------------
+
+# -----------------------------
+# Final Summary
+# -----------------------------
 def summarize_results(df):
     if df is None or df.empty:
         return "⚠ No recognized tests found in this report."
+
+    # Ensure Status column exists before filtering
     if 'Status' not in df.columns:
-        return "⚠ Analysis did not produce standard status column."
-    abnormal = df[df["Status"].str.contains("HIGH|LOW", case=False, na=False)]
+         return "⚠ Analysis did not produce standard status column."
+
+    abnormal = df[df["Status"].str.contains("HIGH|LOW", case=False, na=False)] # Add na=False
+
     if abnormal.empty:
         return "✅ All analyzed values appear within expected ranges."
     else:
         notes = []
         for _, row in abnormal.iterrows():
+            # Ensure columns exist before accessing
             test_name = row.get('Test', 'Unknown Test')
             status_detail = row.get('Status', 'Unknown Status')
             meaning_detail = row.get('Meaning', 'No meaning provided')
+
             if "HIGH" in status_detail:
                 notes.append(f"High {test_name} → {meaning_detail}")
             elif "LOW" in status_detail:
                 notes.append(f"Low {test_name} → {meaning_detail}")
-        return "⚠ Abnormal findings detected:\n- " + "\n- ".join(notes)
+            # else: This case is handled by filtering 'abnormal'
 
-# ---------------- Streamlit dashboard UI ----------------
-st.set_page_config(page_title="Universal Lab Report Analyzer", page_icon="🩺", layout="wide", initial_sidebar_state="expanded")
 
-with st.sidebar:
-    st.header("Lab Report Upload")
-    uploaded_files = st.file_uploader("Upload PDF or Image Reports", accept_multiple_files=True, type=['pdf', 'png', 'jpg', 'jpeg'])
-    st.markdown("<small>🔒 Private, local processing. <br>⚠ Demo only — not medical advice.</small>", unsafe_allow_html=True)
-    analyze_btn = st.button("Analyze Reports", use_container_width=True)
+        return "⚠ Abnormal findings detected:\n- " + "\n- ".join(notes) if notes else "✅ No major abnormalities detected among analyzed tests."
 
-st.title("🩺 Universal Lab Report Analyzer")
-st.write("Automatically extracts, normalizes, and analyzes lab values from uploaded medical reports.")
 
-if uploaded_files and analyze_btn:
-    full_text = ""
-    all_tables = []
+# -----------------------------
+# Run in Colab
+# -----------------------------
+uploaded = files.upload()
 
-    # First extract all text and tables from all files
-    for uploaded_file in uploaded_files:
-        file_stream = io.BytesIO(uploaded_file.read())
+for filename, file_content in uploaded.items():
+    print(f"\n📄 Processing file: {filename}\n")
 
-        # Extract full text
-        extracted_text = extract_text_from_file(file_stream, uploaded_file.name)
-        full_text += extracted_text + "\n\n"
+    # Use BytesIO to allow file to be read multiple times
+    file_stream = io.BytesIO(file_content)
 
-        # Important: Reset BytesIO stream position before next extraction
-        file_stream.seek(0)
+    # Extract text using the improved function
+    extracted_text = extract_text_from_file(file_stream, filename)
 
-        # Extract all tables from this file
-        tables_df = extract_all_tables_from_pdf(file_stream)
-        if not tables_df.empty:
-            all_tables.append(tables_df)
+    if extracted_text:
+        print("🔹 Extracted Text (preview):\n")
+        print(extracted_text[:1000])  # preview
 
-    # Combine all tables into one DataFrame if exists
-    if all_tables:
-        combined_tables_df = pd.concat(all_tables, ignore_index=True)
-        st.subheader("🔢 Combined Extracted Tables")
-        st.dataframe(combined_tables_df)
+        # Analyze the extracted text for lab values
+        results_df = analyze_text_for_lab_values(extracted_text)
+
+        if not results_df.empty:
+            print("\n🔬 Analysis Results:")
+            display(results_df)
+
+            print("\n🏁 Final Summary:")
+            print(summarize_results(results_df))
+        else:
+            print("\n⚠ No recognized lab values found in the extracted text.")
+            print("\nHint: Ensure test names match keys in LAB_RULES or refine regex pattern.")
+
     else:
-        st.info("No tables found in the uploaded reports.")
-
-    # Show full extracted text preview
-    with st.expander("🔹 Full Extracted Text Preview (All Pages)"):
-        st.text_area("Extracted Text", full_text, height=400)
-
-    # Analyze the combined full text
-    results_df = analyze_text_for_lab_values(full_text)
-
-    if not results_df.empty:
-        st.subheader("🔬 Analysis Results")
-        st.dataframe(results_df, use_container_width=True)
-
-        st.subheader("🏁 Summary")
-        summary_text = summarize_results(results_df)
-        st.info(summary_text)
-
-        abnormal = results_df[results_df["Status"].str.contains("HIGH|LOW", case=False, na=False)]
-        if not abnormal.empty:
-            st.markdown("#### ⚠ Abnormal Values")
-            for _, row in abnormal.iterrows():
-                st.warning(f"{row['Test']}: {row['Status']} — {row['Meaning']}")
-    else:
-        st.error("No recognized lab values found in the analyzed reports.")
-
-else:
-    st.info("Upload lab report files and click 'Analyze Reports' to begin.")
-
-st.write("---")
-st.caption("Demo for educational use only. Extraction accuracy depends on the report format.")
+        print("\n❌ Failed to extract any text from the file.")
