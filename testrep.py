@@ -10,7 +10,6 @@ import re
 import pdfplumber
 import pytesseract
 import pandas as pd
-from google.colab import files
 from PIL import Image, ImageOps
 import camelot
 import tabula
