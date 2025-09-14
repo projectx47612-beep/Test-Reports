@@ -1,2 +1,8 @@
 pdfplumber
+pillow
 pytesseract
+pandas
+regex
+camelot-py[cv]
+tabula-py
+PyPDF2 --quiet
