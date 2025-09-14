@@ -6,12 +6,16 @@ import pdfplumber
 import pytesseract
 import re
 
-# LAB_RULES dictionary here (copy from your code)
+# ----- LAB RULES dictionary (copy your full dict here) -----
 LAB_RULES = {
-    # ... include your full lab rules dictionary here ...
+    "glucose": {"low": 70, "high": 99, "unit": "mg/dL", "meaning": "Diabetes risk if high"},
+    "fasting blood sugar": {"low": 74, "high": 106, "unit": "mg/dL", "meaning": "Diabetes risk if high"},
+    "postprandial glucose": {"low": 70, "high": 140, "unit": "mg/dL", "meaning": "Elevated after meals indicates diabetes"},
+    "hba1c": {"low": 4, "high": 6.4, "unit": "%", "meaning": "Diabetes marker; >6.5% indicates diabetes"},
+    # Add rest of your tests...
 }
 
-# Function: Normalize value (copy from your code)
+# ----- Normalize value function -----
 def normalize_value(value):
     value = str(value).replace(",", "").strip()
     if value.startswith('<') or value.startswith('>'):
@@ -33,7 +37,7 @@ def normalize_value(value):
     except:
         return None
 
-# Function: Extract text from uploaded file stream
+# ----- Extraction function with BytesIO support -----
 def extract_text_from_file(file_stream, filename):
     text = ""
     if filename.lower().endswith(".pdf"):
@@ -52,22 +56,25 @@ def extract_text_from_file(file_stream, filename):
             text = pytesseract.image_to_string(gray)
         except Exception as e:
             st.error(f"Image OCR failed: {e}")
-            text = ""
     else:
         st.error("Unsupported file format.")
-        text = ""
     return text
 
-# Function: Analyze extracted text for lab values
+# ----- Analysis function with relaxed regex pattern -----
 def analyze_text_for_lab_values(text):
     results = []
     text_low = text.lower()
     for test, rule in LAB_RULES.items():
-        pattern = rf"{re.escape(test)}[^0-9]*(\d+\.?\d*)"
+        # New pattern allows spaces, optional colon/hyphen, before the numeric value
+        pattern = rf"{re.escape(test)}\s*[:\-]*\s*([\d\.]+)"
         match = re.search(pattern, text_low)
         if match:
             value = float(match.group(1))
-            ref_range_match = re.search(rf"{re.escape(test)}.*?\d+\.?\d*.*?(\d+\.?\d*)\s*-\s*(\d+\.?\d*)", text_low)
+            # Attempt to get reference range from text, fallback to defaults in rules
+            ref_range_match = re.search(
+                rf"{re.escape(test)}.*?(\d+\.?\d*)\s*-\s*(\d+\.?\d*)", 
+                text_low
+            )
             if ref_range_match:
                 low_ref, high_ref = float(ref_range_match.group(1)), float(ref_range_match.group(2))
                 current_low, current_high = low_ref, high_ref
@@ -75,18 +82,12 @@ def analyze_text_for_lab_values(text):
             else:
                 current_low, current_high = rule["low"], rule["high"]
                 range_str = f"{rule['low']} - {rule['high']} {rule['unit']}"
-
-            status = "Unknown"
-            if isinstance(value, (int, float)):
-                if value < current_low:
-                    status = f"LOW ({value} {rule.get('unit', '')})"
-                elif value > current_high:
-                    status = f"HIGH ({value} {rule.get('unit', '')})"
-                else:
-                    status = f"Normal ({value} {rule.get('unit', '')})"
+            if value < current_low:
+                status = f"LOW ({value} {rule.get('unit', '')})"
+            elif value > current_high:
+                status = f"HIGH ({value} {rule.get('unit', '')})"
             else:
-                status = f"Value: {value}"
-
+                status = f"Normal ({value} {rule.get('unit', '')})"
             results.append({
                 "Test": test.upper(),
                 "Value": value,
@@ -96,7 +97,7 @@ def analyze_text_for_lab_values(text):
             })
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["Test", "Value", "Reference Range", "Status", "Meaning"])
 
-# Function: Summarize results
+# ----- Summary function -----
 def summarize_results(df):
     if df is None or df.empty:
         return "⚠ No recognized tests found in this report."
@@ -115,28 +116,21 @@ def summarize_results(df):
                 notes.append(f"High {test_name} → {meaning_detail}")
             elif "LOW" in status_detail:
                 notes.append(f"Low {test_name} → {meaning_detail}")
-        return "⚠ Abnormal findings detected:\n- " + "\n- ".join(notes) if notes else "✅ No major abnormalities detected among analyzed tests."
+        return "⚠ Abnormal findings detected:\n- " + "\n- ".join(notes)
 
-# Streamlit UI
+# ----- Streamlit UI -----
 st.set_page_config(
-    page_title="Universal Lab Report Analyzer",
-    page_icon="🩺",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Universal Lab Report Analyzer", page_icon="🩺", layout="wide", initial_sidebar_state="expanded"
 )
 
 with st.sidebar:
     st.header("Lab Report Upload")
     uploaded_files = st.file_uploader(
-        "Upload PDF or Image Reports",
-        accept_multiple_files=True,
-        type=['pdf', 'png', 'jpg', 'jpeg']
+        "Upload PDF or Image Reports", accept_multiple_files=True, type=['pdf', 'png', 'jpg', 'jpeg']
     )
     st.markdown(
-        """
-        <small>🔒 Private, local processing. <br>
-        ⚠ Demo only — not medical advice.</small>
-        """, unsafe_allow_html=True
+        "<small>🔒 Private, local processing. <br>⚠ Demo only — not medical advice.</small>",
+        unsafe_allow_html=True
     )
     analyze_btn = st.button("Analyze Reports", use_container_width=True)
 
